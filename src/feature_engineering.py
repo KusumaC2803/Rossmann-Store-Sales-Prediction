@@ -1,32 +1,38 @@
+
+import numpy as np
 import pandas as pd
 
 
 def create_features(df):
     df = df.copy()
 
-    # Make sure data is ordered correctly
+    # Keep Date for chronological validation and forecasting.
+    df["Date"] = pd.to_datetime(df["Date"])
+
+    # Sort by store and date before calculating historical features.
     df = df.sort_values(
         ["Store", "Date"]
     ).reset_index(drop=True)
 
     # --------------------------------------------------
-    # DATE FEATURES
+    # 1. DATE FEATURES
     # --------------------------------------------------
 
     df["Year"] = df["Date"].dt.year
     df["Month"] = df["Date"].dt.month
     df["Day"] = df["Date"].dt.day
-    df["WeekOfYear"] = df["Date"].dt.isocalendar().week.astype(int)
+    df["WeekOfYear"] = (
+        df["Date"].dt.isocalendar().week.astype(int)
+    )
     df["Quarter"] = df["Date"].dt.quarter
     df["DayOfWeek"] = df["Date"].dt.dayofweek
 
-    # Weekend indicator
     df["IsWeekend"] = (
         df["DayOfWeek"] >= 5
     ).astype(int)
 
     # --------------------------------------------------
-    # PROMOTION FEATURES
+    # 2. PROMOTION FEATURES
     # --------------------------------------------------
 
     df["Promo_Competition"] = (
@@ -34,32 +40,96 @@ def create_features(df):
         * (df["CompetitionDistance"] > 0).astype(int)
     )
 
-    df["Promo2_Active"] = (
-        df["Promo2"]
-        * (df["Month"].isin([3, 6, 9, 12])).astype(int)
-    )
+    # Use each store's actual PromoInterval.
+    # Examples: "Jan,Apr,Jul,Oct" and "Feb,May,Aug,Nov".
+    month_names = {
+        1: "Jan",
+        2: "Feb",
+        3: "Mar",
+        4: "Apr",
+        5: "May",
+        6: "Jun",
+        7: "Jul",
+        8: "Aug",
+        9: "Sep",
+        10: "Oct",
+        11: "Nov",
+        12: "Dec",
+    }
 
-    # --------------------------------------------------
-    # STORE AGE / COMPETITION FEATURES
-    # --------------------------------------------------
+    current_month = df["Month"].map(month_names)
 
-    df["CompetitionOpenMonths"] = 0
-
-    valid_competition = (
-        (df["CompetitionOpenSinceYear"] > 0)
-        & (df["CompetitionOpenSinceMonth"] > 0)
-    )
-
-    df.loc[valid_competition, "CompetitionOpenMonths"] = (
-        (
-            df.loc[valid_competition, "Year"]
-            - df.loc[valid_competition, "CompetitionOpenSinceYear"]
-        ) * 12
-        +
-        (
-            df.loc[valid_competition, "Month"]
-            - df.loc[valid_competition, "CompetitionOpenSinceMonth"]
+    if "PromoInterval" in df.columns:
+        interval = (
+            df["PromoInterval"]
+            .fillna("")
+            .astype(str)
         )
+
+        month_is_active = pd.Series(
+            [
+                month in [
+                    item.strip()
+                    for item in months.split(",")
+                    if item.strip()
+                ]
+                for month, months in zip(
+                    current_month, interval
+                )
+            ],
+            index=df.index,
+        )
+
+        # Promo2SinceWeek is a week number, not a month.
+        # Calculate the start date from the ISO year and week.
+        promo2_start = pd.to_datetime(
+            df["Promo2SinceYear"].astype("Int64").astype(str)
+            + "-W"
+            + df["Promo2SinceWeek"].astype("Int64").astype(str)
+            + "-1",
+            format="%G-W%V-%u",
+            errors="coerce",
+        )
+
+        has_promo2_start = (
+            df["Promo2SinceYear"].fillna(0).gt(0)
+            & df["Promo2SinceWeek"].fillna(0).gt(0)
+        )
+
+        promo2_started = (
+            has_promo2_start
+            & promo2_start.notna()
+            & (df["Date"] >= promo2_start)
+        )
+
+        df["Promo2_Active"] = (
+            df["Promo2"].fillna(0).eq(1)
+            & month_is_active
+            & promo2_started
+        ).astype(int)
+
+    else:
+        df["Promo2_Active"] = 0
+
+    # --------------------------------------------------
+    # 3. COMPETITION FEATURES
+    # --------------------------------------------------
+
+    competition_year = (
+        df["CompetitionOpenSinceYear"].fillna(0)
+    )
+    competition_month = (
+        df["CompetitionOpenSinceMonth"].fillna(0)
+    )
+
+    df["CompetitionOpenMonths"] = np.where(
+        (competition_year > 0)
+        & (competition_month > 0),
+        (
+            (df["Year"] - competition_year) * 12
+            + (df["Month"] - competition_month)
+        ),
+        0,
     )
 
     df["CompetitionOpenMonths"] = (
@@ -68,97 +138,57 @@ def create_features(df):
     )
 
     # --------------------------------------------------
-    # LOG TRANSFORMATION FOR SALES
+    # 4. SALES LAG FEATURES
     # --------------------------------------------------
 
-    # Used only for historical lag/rolling calculations.
-    # We will not use future sales.
-    df["SalesLog"] = (
-        df["Sales"] + 1
-    ).apply(lambda x: __import__("math").log(x))
+    # These features use previous rows for each store.
+    # They are appropriate when earlier observed sales
+    # are available at prediction time.
+    store_sales = df.groupby("Store")["Sales"]
+
+    df["Sales_Lag_1"] = store_sales.shift(1)
+    df["Sales_Lag_7"] = store_sales.shift(7)
+    df["Sales_Lag_14"] = store_sales.shift(14)
+    df["Sales_Lag_28"] = store_sales.shift(28)
 
     # --------------------------------------------------
-    # LAG FEATURES
+    # 5. ROLLING SALES FEATURES
     # --------------------------------------------------
 
-    # IMPORTANT:
-    # shift() ensures we only use past sales.
-    #
-    # 1 day ago
-    df["Sales_Lag_1"] = (
-        df.groupby("Store")["Sales"]
-        .shift(1)
-    )
-
-    # 7 days ago
-    df["Sales_Lag_7"] = (
-        df.groupby("Store")["Sales"]
-        .shift(7)
-    )
-
-    # 14 days ago
-    df["Sales_Lag_14"] = (
-        df.groupby("Store")["Sales"]
-        .shift(14)
-    )
-
-    # 28 days ago
-    df["Sales_Lag_28"] = (
-        df.groupby("Store")["Sales"]
-        .shift(28)
-    )
-
-    # --------------------------------------------------
-    # ROLLING FEATURES
-    # --------------------------------------------------
-
-    # Shift by one day first so the current day's
-    # sales are NEVER included.
-    previous_sales = (
-        df.groupby("Store")["Sales"]
-        .shift(1)
-    )
+    previous_sales = df.groupby("Store")["Sales"].shift(1)
 
     df["Sales_Rolling_7"] = (
-        previous_sales
-        .groupby(df["Store"])
+        previous_sales.groupby(df["Store"])
         .transform(
             lambda x: x.rolling(
                 window=7,
-                min_periods=1
+                min_periods=1,
             ).mean()
         )
     )
 
     df["Sales_Rolling_14"] = (
-        previous_sales
-        .groupby(df["Store"])
+        previous_sales.groupby(df["Store"])
         .transform(
             lambda x: x.rolling(
                 window=14,
-                min_periods=1
+                min_periods=1,
             ).mean()
         )
     )
 
     df["Sales_Rolling_28"] = (
-        previous_sales
-        .groupby(df["Store"])
+        previous_sales.groupby(df["Store"])
         .transform(
             lambda x: x.rolling(
                 window=28,
-                min_periods=1
+                min_periods=1,
             ).mean()
         )
     )
 
-    # --------------------------------------------------
-    # REMOVE ORIGINAL DATE
-    # --------------------------------------------------
-
-    df = df.drop(
-        columns=["Date", "SalesLog"],
-        errors="ignore"
-    )
+    # Do not remove Date here.
+    # The validation script needs it for chronological splitting.
 
     return df
+

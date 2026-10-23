@@ -1,14 +1,38 @@
-venv/
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-.env
+# Virtual environment
 
-# Large datasets
+venv/
+.venv/
+
+# Python cache
+
+**pycache**/
+*.py[cod]
+*$py.class
+
+# Environment variables and secrets
+
+.env
+.env.*
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Datasets
+
 data/*.csv
 
-# Generated model files
+# Trained models
+
 models/*.pkl
 
 # Generated outputs
+
 outputs/
+
+# IDE and operating system files
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
