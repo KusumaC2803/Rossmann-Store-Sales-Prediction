@@ -48,16 +48,16 @@ st.markdown(
 st.subheader("Validation Results")
 
 results_path = (
-Path(**file**).resolve().parent.parent
+Path(__file__).resolve().parent.parent
 / "outputs"
 / "baseline_comparison.csv"
 )
 
 if results_path.exists():
-results = pd.read_csv(results_path)
-st.dataframe(results, use_container_width=True)
+    results = pd.read_csv(results_path)
+    st.dataframe(results, use_container_width=True)
 else:
-st.warning(
-"The validation CSV is not included in this deployment. "
-"The reported metrics above come from the project's recorded validation run."
-)
+    st.warning(
+        "The validation CSV is not included in this deployment. "
+        "The reported metrics above come from the project's recorded validation run."
+    )
